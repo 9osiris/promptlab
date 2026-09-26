@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.request
 import urllib.error
 
@@ -66,6 +67,10 @@ def main(argv=None):
     p.add_argument("--api-key",
                    default=os.environ.get("OPENAI_API_KEY", ""))
     p.add_argument("--timeout", type=float, default=120)
+    p.add_argument("--json", action="store_true",
+                   help="print machine-readable json instead of labeled sections")
+    p.add_argument("--save", metavar="FILE",
+                   help="write the comparison to a markdown file")
     args = p.parse_args(argv)
 
     if not args.system:
@@ -75,10 +80,11 @@ def main(argv=None):
     models = args.model or ["gpt-4o-mini"]
     prompt = read_prompt(args.prompt)
 
-    print("prompt: %s\n" % prompt)
+    # one run per system x model pair, timed
+    runs = []
     for i, system in enumerate(systems, 1):
         for model in models:
-            print("--- system %d (%s) ---" % (i, model))
+            start = time.perf_counter()
             try:
                 reply = complete(args.base_url, args.api_key, model,
                                  [{"role": "system", "content": system},
@@ -86,7 +92,31 @@ def main(argv=None):
                                  args.timeout)
             except (RuntimeError, urllib.error.URLError) as e:
                 reply = "error: %s" % e
-            print(reply + "\n")
+            ms = int((time.perf_counter() - start) * 1000)
+            runs.append({"system": i, "model": model, "ms": ms, "reply": reply})
+
+    if args.json:
+        print(json.dumps({"prompt": prompt, "runs": runs}, indent=2))
+    else:
+        print("prompt: %s\n" % prompt)
+        for run in runs:
+            print("--- system %d (%s) [%dms] ---" % (run["system"], run["model"], run["ms"]))
+            print(run["reply"] + "\n")
+
+    if args.save:
+        lines = ["# promptlab comparison", "", "prompt: %s" % prompt, ""]
+        for run in runs:
+            lines.append("## system %d (%s) - %dms" % (run["system"], run["model"], run["ms"]))
+            lines.append("")
+            lines.append(run["reply"])
+            lines.append("")
+        try:
+            with open(args.save, "w") as f:
+                f.write("\n".join(lines))
+        except OSError as e:
+            sys.exit("promptlab: cant write %s: %s" % (args.save, e))
+        if not args.json:
+            print("saved to %s" % args.save)
 
 
 if __name__ == "__main__":
